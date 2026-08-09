@@ -16,7 +16,7 @@ primary_region = "iad"
   LOG_STORE_BUCKET = "ambient-logs"
   R2_REGION = "auto"
   # INSTANCE_ID is set per-machine at deploy time via fly secrets or machine env
-  # API_BASE_URL set after domain is confirmed (currently ambient-api.fly.dev)
+  # API_BASE_URL: https://ambient-api.fly.dev/v1 (beta — custom domain deferred)
 
 [http_service]
   internal_port = 8080
