@@ -21,6 +21,7 @@
  */
 import fs from 'fs';
 import path from 'path';
+import { v4 as uuidv4 } from 'uuid';
 import { canonicalSha256, sealRecord, GENESIS_PREV_HASH } from '../lib/crypto';
 import { logger } from '../lib/logger';
 
@@ -29,6 +30,11 @@ const WAL_DIR = process.env['WAL_DIR'] ?? '/data/wal';
 const WAL_FILE = path.join(WAL_DIR, 'pending.wal');
 const DEAD_LETTER_DIR = path.join(WAL_DIR, 'dead_letter');
 const LOG_STORE_BUCKET = process.env['LOG_STORE_BUCKET'] ?? 'ambient-logs';
+
+// S-2 (Sentinel): inject INSTANCE_ID so concurrent Fly.io instances never share an R2 key.
+// Each instance writes to its own object under the hourly prefix — audit reads all objects
+// under the prefix.
+const INSTANCE_ID: string = process.env['INSTANCE_ID'] ?? uuidv4();
 
 // Flush parameters (Sentinel Decision 2)
 const FLUSH_MAX_RECORDS = 500;
@@ -52,6 +58,8 @@ export interface LogRecord {
   session_token?: string;
   impression_token?: string;
   request_id?: string;
+  /** P-4: impression_id on click events for cross-correlation with impression log entries. */
+  impression_id?: string;
   surface?: string;
   user_agent_hash?: string;
   candidate_set_size?: number;   // Signal Decision 3: log per impression
@@ -188,18 +196,53 @@ async function replayWal(): Promise<void> {
   logger.info({ msg: 'log-store: replaying WAL', count: lines.length });
 
   const records: LogRecord[] = [];
+  const quarantined: LogRecord[] = [];
+
   for (const line of lines) {
-    try { records.push(JSON.parse(line) as LogRecord); } catch { /* skip corrupt line */ }
+    let record: LogRecord;
+    try { record = JSON.parse(line) as LogRecord; } catch { /* skip corrupt line */ continue; }
+
+    // S-3 (Sentinel): verify per-record HMAC before flushing to object storage.
+    // A record that was tampered with or written with the wrong key must never reach R2.
+    const { record_hmac, ...rest } = record;
+    const expectedHmac = sealRecord(rest as unknown as Record<string, unknown>);
+    if (record_hmac !== expectedHmac) {
+      logger.error({
+        msg: 'log-store: WAL replay HMAC mismatch — quarantining record',
+        seq: record.seq,
+        stored_hmac: record_hmac,
+        expected_hmac: expectedHmac,
+      });
+      quarantined.push(record);
+    } else {
+      records.push(record);
+    }
+  }
+
+  // Write quarantined records to dead-letter directory — do NOT flush to R2.
+  if (quarantined.length > 0) {
+    const dlFile = path.join(DEAD_LETTER_DIR, `replay_hmac_fail_${Date.now()}.ndjson`);
+    const body = quarantined.map((r) => JSON.stringify(r)).join('\n') + '\n';
+    try {
+      fs.writeFileSync(dlFile, body);
+      logger.error({
+        msg: 'log-store: quarantined WAL records with HMAC failures',
+        count: quarantined.length,
+        deadLetterFile: dlFile,
+      });
+    } catch (err) {
+      logger.error({ msg: 'log-store: FATAL — could not write HMAC-failure dead-letter', err: (err as Error).message });
+    }
   }
 
   if (records.length === 0) return;
 
-  // Restore seq and prevHash from last WAL record
+  // Restore seq and prevHash from last verified WAL record
   const last = records[records.length - 1]!;
   _seq = last.seq;
   _prevHash = canonicalSha256(last as unknown as Record<string, unknown>);
 
-  // Attempt to flush replayed records to object storage
+  // Attempt to flush verified records to object storage
   await writeToObjectStorage(records);
 }
 
@@ -232,7 +275,10 @@ async function writeToObjectStorage(records: LogRecord[]): Promise<boolean> {
   if (records.length === 0) return true;
 
   const hourKey = getHourKey(records[0]!.timestamp_utc_ms);
-  const objectKey = `impressions/${hourKey}/events.ndjson`;
+  // S-2 (Sentinel): include INSTANCE_ID in the object key to prevent last-writer-wins
+  // data loss when multiple Fly.io instances flush to the same hourly prefix.
+  // Audit code must list all objects under `impressions/${hourKey}/` to read the full hour.
+  const objectKey = `impressions/${hourKey}/${INSTANCE_ID}.ndjson`;
   const body = records.map((r) => JSON.stringify(r)).join('\n') + '\n';
 
   // Write manifest

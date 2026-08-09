@@ -87,6 +87,8 @@ adsClickRouter.get('/click', async (req: Request, res: Response): Promise<void> 
         publisher_id: payload.publisher_id,
         campaign_id: payload.campaign_id,
         impression_token: token,
+        // P-4 (Proof): include impression_id for cross-correlation with impression events.
+        impression_id: payload.impression_id,
       });
     } catch (err) {
       logger.error({ msg: 'click log failed', err: (err as Error).message });

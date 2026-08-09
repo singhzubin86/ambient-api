@@ -51,6 +51,11 @@ jest.mock('../../src/services/anomaly-monitor', () => ({
   startAnomalyMonitor: jest.fn(),
   stopAnomalyMonitor: jest.fn(),
 }));
+jest.mock('../../src/services/freq-cap', () => ({
+  isFreqCapExceeded: jest.fn().mockResolvedValue(false),
+  recordFreqCapImpression: jest.fn().mockResolvedValue(undefined),
+  SESSION_TOKEN_PATTERN: /^[a-zA-Z0-9_-]{1,128}$/,
+}));
 jest.mock('../../src/middleware/auth', () => ({
   publisherApiKeyAuth: (_req: any, _res: any, next: any) => {
     _req.publisherId = 'pub_test123';
@@ -178,6 +183,15 @@ describe('POST /v1/ads/request', () => {
     });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('PII_DETECTED_IN_KEYWORDS');
+  });
+
+  test('P-1: returns 204 (not 400) when context.keywords is an empty array', async () => {
+    // Empty keywords is a valid no-fill signal, not a protocol error.
+    const res = await request(app).post('/v1/ads/request').send({
+      ...validBody,
+      context: { keywords: [], surface: 'standalone_chatbot' },
+    });
+    expect(res.status).toBe(204);
   });
 
   test('selects highest CPM campaign when multiple match (Signal Decision 3)', async () => {
@@ -315,5 +329,96 @@ describe('GET /v1/ads/click', () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('INVALID_TOKEN');
     expect(res.body.message).toBe('TOKEN_EXPIRED');
+  });
+});
+
+// ─── Freq cap (FREQ-01 through FREQ-06) ───────────────────────────────────────
+//
+// The 2-impression/campaign/session hard cap is enforced by isFreqCapExceeded()
+// reading a Redis counter.  The freq-cap module is mocked at the top of this file
+// so we can drive exact cap-exceeded / cap-OK responses without wiring Redis
+// pipeline state manually.
+
+import { isFreqCapExceeded } from '../../src/services/freq-cap';
+const mockIsFreqCapExceeded = jest.mocked(isFreqCapExceeded);
+
+describe('Freq cap — FREQ-01 through FREQ-06', () => {
+  const freqBody = {
+    publisher_id: 'pub_test123',
+    session_token: 'sess-freq-test',
+    context: { keywords: ['travel', 'hotel'], surface: 'standalone_chatbot' },
+    request_id: 'req-freq-001',
+  };
+
+  beforeEach(() => {
+    mockIsFreqCapExceeded.mockResolvedValue(false);
+    mockCampaigns.mockReturnValue([makeCampaign()]);
+  });
+
+  test('FREQ-01: returns 200 when impression count is below cap (0 prior impressions)', async () => {
+    mockIsFreqCapExceeded.mockResolvedValue(false);
+    const res = await request(app).post('/v1/ads/request').send(freqBody);
+    expect(res.status).toBe(200);
+    expect(res.body.ad).toBeDefined();
+  });
+
+  test('FREQ-02: returns 200 when impression count is exactly 1 (one prior impression, cap=2)', async () => {
+    // One impression recorded — still below hard cap of 2.
+    mockIsFreqCapExceeded.mockResolvedValue(false);
+    const res = await request(app).post('/v1/ads/request').send(freqBody);
+    expect(res.status).toBe(200);
+    expect(res.body.ad).toBeDefined();
+  });
+
+  test('FREQ-03: returns 204 when freq cap is hit (2 impressions already served for this campaign+session)', async () => {
+    // isFreqCapExceeded returns true → campaign excluded → no fill → 204
+    mockIsFreqCapExceeded.mockResolvedValue(true);
+    const res = await request(app).post('/v1/ads/request').send(freqBody);
+    expect(res.status).toBe(204);
+  });
+
+  test('FREQ-04: cap is campaign-scoped — capped campaign excluded but other campaigns can still fill', async () => {
+    const cappedCampaign = makeCampaign({ campaign_id: 'camp_capped', headline: 'Capped Ad' });
+    const otherCampaign = makeCampaign({ campaign_id: 'camp_other', headline: 'Other Ad' });
+    mockCampaigns.mockReturnValue([cappedCampaign, otherCampaign]);
+
+    // Only the first campaign is capped
+    mockIsFreqCapExceeded.mockImplementation((_pub, _sess, campaignId) =>
+      Promise.resolve(campaignId === 'camp_capped'),
+    );
+
+    const res = await request(app).post('/v1/ads/request').send(freqBody);
+    expect(res.status).toBe(200);
+    expect(res.body.ad.headline).toBe('Other Ad');
+  });
+
+  test('FREQ-05: cap is session-scoped — same campaign fills for a different session_token', async () => {
+    // Simulate cap exceeded for one session but not another
+    mockIsFreqCapExceeded.mockImplementation((_pub, sessionToken, _camp) =>
+      Promise.resolve(sessionToken === 'sess-capped'),
+    );
+
+    // Capped session → 204
+    const cappedRes = await request(app).post('/v1/ads/request')
+      .send({ ...freqBody, session_token: 'sess-capped' });
+    expect(cappedRes.status).toBe(204);
+
+    // Different session → 200
+    const openRes = await request(app).post('/v1/ads/request')
+      .send({ ...freqBody, session_token: 'sess-open', request_id: 'req-freq-002' });
+    expect(openRes.status).toBe(200);
+    expect(openRes.body.ad).toBeDefined();
+  });
+
+  test('FREQ-06: all campaigns capped in session → 204 No Content (total fill starvation)', async () => {
+    const camp1 = makeCampaign({ campaign_id: 'camp_a', headline: 'Ad A' });
+    const camp2 = makeCampaign({ campaign_id: 'camp_b', headline: 'Ad B' });
+    mockCampaigns.mockReturnValue([camp1, camp2]);
+
+    // All campaigns capped for this session
+    mockIsFreqCapExceeded.mockResolvedValue(true);
+
+    const res = await request(app).post('/v1/ads/request').send(freqBody);
+    expect(res.status).toBe(204);
   });
 });

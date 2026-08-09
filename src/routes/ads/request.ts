@@ -55,11 +55,17 @@ adsRequestRouter.post(
       return;
     }
     if (!Array.isArray(body.context?.keywords) || body.context.keywords.length === 0) {
-      res.status(400).json({
-        error: 'INVALID_REQUEST',
-        message: 'context.keywords is required and must be a non-empty array',
-        request_id: requestId,
-      });
+      // P-1 (Proof): empty keywords array is a valid no-fill condition, not a protocol error.
+      // Return 204 No Content (same as no matching campaign), not 400.
+      if (Array.isArray(body.context?.keywords) && body.context.keywords.length === 0) {
+        res.status(204).end();
+      } else {
+        res.status(400).json({
+          error: 'INVALID_REQUEST',
+          message: 'context.keywords is required and must be an array',
+          request_id: requestId,
+        });
+      }
       return;
     }
     if (!body.context.surface) {

@@ -14,6 +14,15 @@ import { config } from './config';
 
 const LOG_SIGNING_KEY = process.env['LOG_SIGNING_KEY'] ?? 'dev-log-signing-key-change-in-prod-32c';
 
+// Advisory (pre-prod gate): fail fast if LOG_SIGNING_KEY is not set in production.
+if (process.env['NODE_ENV'] === 'production' && !process.env['LOG_SIGNING_KEY']) {
+  throw new Error(
+    'FATAL: LOG_SIGNING_KEY environment variable is not set. ' +
+    'This key is required for tamper-evident log signing in production. ' +
+    'Set LOG_SIGNING_KEY to a secret 32-byte+ value before starting the server.',
+  );
+}
+
 // ─────────────────────────────────────────────
 // Impression token
 // ─────────────────────────────────────────────
@@ -126,9 +135,24 @@ function hmacSha256Hex(key: string, data: string): string {
   return crypto.createHmac('sha256', key).update(data, 'utf8').digest('hex');
 }
 
+/**
+ * Constant-time string comparison for hex-encoded HMAC values.
+ *
+ * S-1 (Sentinel): the early-return length check `if (a.length !== b.length) return false`
+ * leaks token length via timing.  We must always call crypto.timingSafeEqual regardless
+ * of length.  Pad the shorter buffer with zero bytes so both have equal length before the
+ * comparison — the result is always false when lengths differ, but timing is constant.
+ */
 function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
+  const bufA = Buffer.from(a, 'hex');
+  const bufB = Buffer.from(b, 'hex');
+  const len = Math.max(bufA.length, bufB.length);
+  const paddedA = Buffer.alloc(len, 0);
+  const paddedB = Buffer.alloc(len, 0);
+  bufA.copy(paddedA);
+  bufB.copy(paddedB);
+  // Lengths differ → always mismatch, but we never short-circuit before the compare.
+  return crypto.timingSafeEqual(paddedA, paddedB) && bufA.length === bufB.length;
 }
 
 /** Deterministic JSON serialisation — keys sorted, no extra whitespace. */
