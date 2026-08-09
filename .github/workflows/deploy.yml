@@ -1,0 +1,91 @@
+# Ambient API — CI/CD pipeline
+# On PR to main: lint + test only
+# On merge to main: lint + test + rolling deploy to Fly.io
+# Ref: PLANS/AMBIENT_INFRA_PLAN_V1.md §4
+
+name: CI / Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Lint + Test ──────────────────────────────────────────────────────────────
+  test:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ambient
+          POSTGRES_PASSWORD: ambient
+          POSTGRES_DB: ambient_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgres://ambient:ambient@localhost:5432/ambient_test
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ci-test-jwt-secret-32-chars-minimum
+      IMPRESSION_TOKEN_SECRET: ci-test-impression-secret-32chars
+      LOG_SIGNING_KEY: ci-test-log-signing-key-32-chars00
+      LOG_STORE_TYPE: file
+      LOG_STORE_PATH: /tmp/ambient-test-logs
+      WAL_DIR: /tmp/ambient-test-wal
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript compile check
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Run tests
+        run: npm test
+
+  # ── Deploy ───────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to Fly.io
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy (rolling — zero downtime)
+        run: flyctl deploy --remote-only --strategy rolling --wait-timeout 120
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
