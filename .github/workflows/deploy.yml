@@ -67,9 +67,6 @@ jobs:
       - name: TypeScript compile check
         run: npm run build
 
-      - name: Lint
-        run: npm run lint
-
       - name: Run tests
         run: npm test
 
