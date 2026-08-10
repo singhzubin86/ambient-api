@@ -25,9 +25,14 @@ export async function isFreqCapExceeded(
   sessionToken: string,
   campaignId: string,
 ): Promise<boolean> {
-  const redis = getRedis();
-  const val = await redis.get(key(publisherId, sessionToken, campaignId));
-  return val !== null && parseInt(val, 10) >= hardCap;
+  try {
+    const redis = getRedis();
+    const val = await redis.get(key(publisherId, sessionToken, campaignId));
+    return val !== null && parseInt(val, 10) >= hardCap;
+  } catch {
+    // Redis unavailable — fail open (don't cap, log store is authoritative)
+    return false;
+  }
 }
 
 /** Increment counter with sliding TTL. Call after impression is selected. */

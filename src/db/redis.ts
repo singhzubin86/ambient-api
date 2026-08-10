@@ -6,7 +6,7 @@ let _redis: Redis | null = null;
 
 export function getRedis(): Redis {
   if (!_redis) {
-    _redis = new Redis(config.redis.url, { lazyConnect: true, enableOfflineQueue: false });
+    _redis = new Redis(config.redis.url, { lazyConnect: false, enableOfflineQueue: true, maxRetriesPerRequest: 3 });
     _redis.on('error', (err: Error) => logger.error({ msg: 'redis error', err: err.message }));
   }
   return _redis;

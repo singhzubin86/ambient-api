@@ -18,10 +18,15 @@ export async function isDailyBudgetExhausted(
   campaignId: string,
   dailyBudgetCents: number,
 ): Promise<boolean> {
-  const redis = getRedis();
-  const val = await redis.get(dailyKey(campaignId));
-  if (val === null) return false;
-  return parseInt(val, 10) >= dailyBudgetCents;
+  try {
+    const redis = getRedis();
+    const val = await redis.get(dailyKey(campaignId));
+    if (val === null) return false;
+    return parseInt(val, 10) >= dailyBudgetCents;
+  } catch {
+    // Redis unavailable — fail open (allow impression, log store is authoritative)
+    return false;
+  }
 }
 
 /**
