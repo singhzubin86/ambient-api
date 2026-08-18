@@ -24,6 +24,7 @@ export type DisclosureLabel = 'Ad' | 'Sponsored';
 export type DisclosurePlacement = 'prepend' | 'surround';
 
 export interface AdObject {
+  ad_id: string;               // unique per impression; echoed in logs for correlation (SPEC-4 R3)
   headline: string;
   body: string;
   cta_text: string;

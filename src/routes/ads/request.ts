@@ -137,6 +137,7 @@ adsRequestRouter.post(
     const clickUrl = `${process.env['API_BASE_URL'] ?? 'https://api.ambient.example'}/v1/ads/click?token=${encodeURIComponent(impressionToken)}`;
 
     const ad: AdObject = {
+      ad_id: impressionId,         // stable per-impression ID echoed in response + log (SPEC-4 R3)
       headline: winner.headline,
       body: winner.body,
       cta_text: winner.cta_text,
@@ -156,7 +157,7 @@ adsRequestRouter.post(
           timestamp_utc_ms: timestampMs,
           publisher_id: publisherId,
           campaign_id: winner.campaign_id,
-          ad_id: `${winner.campaign_id}:creative`,
+          ad_id: impressionId,
           session_token: sessionToken,
           impression_token: impressionToken,
           request_id: requestId,
