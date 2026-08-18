@@ -1,10 +1,11 @@
 /**
  * Auth middleware — publisher API key + advertiser JWT
  * Spec: AMBIENT_ARCHITECTURE_V1.md §4.1, §4.2
+ * Key comparison: HMAC-SHA256 (not bcrypt) — Blueprint decision for high-entropy tokens.
  */
+import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import { getRedis } from '../db/redis';
 import { getPool } from '../db/pool';
 import { config } from '../lib/config';
 import { logger } from '../lib/logger';
@@ -14,6 +15,15 @@ const KEY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min LRU cache per spec §3
 
 // In-process LRU for API key validation — no DB hit on hot path
 const _keyCache = new Map<string, { valid: boolean; publisherId: string; ts: number }>();
+
+/**
+ * Hash an API key for DB comparison — HMAC-SHA256 keyed on JWT_SECRET.
+ * Same algorithm as portal-auth.ts#hashApiKey — must stay in sync.
+ */
+function hashApiKey(apiKey: string): string {
+  const secret = process.env['JWT_SECRET'] ?? 'dev-jwt-secret-change-in-production-32c';
+  return crypto.createHmac('sha256', secret).update(apiKey).digest('hex');
+}
 
 export async function publisherApiKeyAuth(
   req: Request,
@@ -39,23 +49,15 @@ export async function publisherApiKeyAuth(
     return;
   }
 
-  // DB lookup — hash the key and compare
+  // DB lookup — HMAC the key and compare hash directly (O(1), no bcrypt cost)
   try {
-    const bcrypt = await import('bcryptjs');
     const pool = getPool();
-    // Fetch by prefix (first 8 chars) to limit candidate rows
-    const prefix = apiKey.slice(0, 8);
+    const keyHash = hashApiKey(apiKey);
     const { rows } = await pool.query(
-      `SELECT publisher_id, api_key_hash FROM publishers WHERE api_key_prefix = $1 AND status = 'active'`,
-      [prefix],
+      `SELECT publisher_id FROM publishers WHERE api_key_hash = $1 AND status = 'active'`,
+      [keyHash],
     );
-    let found: { publisher_id: string } | null = null;
-    for (const row of rows) {
-      if (await bcrypt.compare(apiKey, row.api_key_hash)) {
-        found = row;
-        break;
-      }
-    }
+    const found = rows[0] ?? null;
     if (!found) {
       _keyCache.set(apiKey, { valid: false, publisherId: '', ts: Date.now() });
       res.status(401).json({ error: 'UNAUTHORIZED', message: 'Invalid API key' });

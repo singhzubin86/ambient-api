@@ -3,6 +3,7 @@
  */
 import express from 'express';
 import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 import { config } from './lib/config';
 import { logger } from './lib/logger';
@@ -18,6 +19,9 @@ import { authRouter } from './routes/auth';
 import { campaignsRouter } from './routes/campaigns';
 import { publishersRouter } from './routes/publishers';
 import { reportingRouter } from './routes/reporting';
+import { portalAuthRouter } from './routes/portal/auth';
+import { portalPublishersRouter } from './routes/portal/publishers';
+import { portalReportingRouter } from './routes/portal/reporting';
 
 export async function createApp(): Promise<express.Application> {
   const app = express();
@@ -27,6 +31,9 @@ export async function createApp(): Promise<express.Application> {
 
   // ── Body parsing ────────────────────────────────────────────────────────────
   app.use(express.json({ limit: '64kb' }));
+
+  // ── Cookie parsing (required for portal HttpOnly JWT cookie) ────────────────
+  app.use(cookieParser());
 
   // ── Rate limiting (per publisher_id enforced in middleware; global guard here)
   app.use('/v1/ads', rateLimit({
@@ -38,12 +45,22 @@ export async function createApp(): Promise<express.Application> {
   }));
 
   // ── Routes ─────────────────────────────────────────────────────────────────
+  // Ad hot path
   app.use('/v1/ads', adsRequestRouter);
   app.use('/v1/ads', adsClickRouter);
+
+  // Admin routes (Bearer JWT, admin-only)
   app.use('/v1/auth', authRouter);
   app.use('/v1/campaigns', campaignsRouter);
   app.use('/v1/publishers', publishersRouter);
   app.use('/v1/reporting', reportingRouter);
+
+  // Portal routes (HttpOnly cookie JWT, self-service)
+  // All portal routes are namespaced under /v1/portal/ to avoid collision with admin routes.
+  app.use('/v1/portal/auth', portalAuthRouter);
+  app.use('/v1/portal/publishers', portalPublishersRouter);
+  // Reporting sub-routes are also on the publishers router (mounted together below)
+  app.use('/v1/portal/publishers', portalReportingRouter);
 
   // ── Health ─────────────────────────────────────────────────────────────────
   app.get('/v1/ads/health', (_req, res) => res.json({ status: 'ok', ts: Date.now() }));
