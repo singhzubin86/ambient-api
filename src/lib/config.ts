@@ -56,6 +56,15 @@ export const config = {
     trailingDays: 7,                       // Signal decision 4 — 7-day median baseline
   },
 
+  cors: {
+    // Comma-separated list of allowed origins for browser-facing portal/API endpoints.
+    // Always includes the production portal. Extend via ALLOWED_ORIGINS env var.
+    allowedOrigins: optional(
+      'ALLOWED_ORIGINS',
+      'https://ambient-portal.fly.dev',
+    ).split(',').map(o => o.trim()).filter(Boolean),
+  },
+
   // Warden-required blocked/conditional categories — MUST NOT be overridden at runtime
   advertiserCategories: {
     blocked: [
