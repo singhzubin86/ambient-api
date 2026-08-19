@@ -185,10 +185,12 @@ portalAuthRouter.post('/logout', portalAuth, async (req: Request, res: Response)
 });
 
 // GET /v1/portal/auth/verify-email?token=<token>
+const PORTAL_BASE_URL = process.env['PORTAL_BASE_URL'] ?? 'https://ambient-portal.fly.dev';
+
 portalAuthRouter.get('/verify-email', async (req: Request, res: Response): Promise<void> => {
   const { token } = req.query;
   if (!token || typeof token !== 'string') {
-    res.status(302).setHeader('Location', '/verify-email?error=missing').end();
+    res.status(302).setHeader('Location', `${PORTAL_BASE_URL}/verify-email?error=missing`).end();
     return;
   }
   const tokenHash = hashVerificationToken(token);
@@ -200,11 +202,11 @@ portalAuthRouter.get('/verify-email', async (req: Request, res: Response): Promi
   );
   const record = rows[0];
   if (!record || record.used_at !== null) {
-    res.status(302).setHeader('Location', '/verify-email?error=invalid').end();
+    res.status(302).setHeader('Location', `${PORTAL_BASE_URL}/verify-email?error=invalid`).end();
     return;
   }
   if (new Date(record.expires_at) < new Date()) {
-    res.status(302).setHeader('Location', '/verify-email?error=expired').end();
+    res.status(302).setHeader('Location', `${PORTAL_BASE_URL}/verify-email?error=expired`).end();
     return;
   }
 
@@ -215,7 +217,7 @@ portalAuthRouter.get('/verify-email', async (req: Request, res: Response): Promi
     await client.query(`UPDATE portal_users SET verified = TRUE, status = 'active', updated_at = NOW() WHERE user_id = $1`, [record.user_id]);
     await client.query('COMMIT');
     logger.info({ msg: 'email_verified', userId: record.user_id });
-    res.status(302).setHeader('Location', '/login?verified=true').end();
+    res.status(302).setHeader('Location', `${PORTAL_BASE_URL}/login?verified=true`).end();
   } catch (err) {
     await client.query('ROLLBACK');
     logger.error({ msg: 'verify-email transaction failed', err: (err as Error).message });
