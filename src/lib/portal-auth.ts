@@ -52,17 +52,23 @@ export function verifyPortalJwt(token: string): PortalJwtPayload {
 }
 
 export function setPortalCookie(res: Response, token: string): void {
+  // SameSite=None + Secure required for cross-origin cookie: API is on
+  // ambient-api.fly.dev but the portal (and its middleware) runs on
+  // ambient-portal.fly.dev. With SameSite=Lax the browser blocks the
+  // cookie on cross-origin requests even with credentials:include.
+  const isProd = process.env['NODE_ENV'] === 'production';
   res.cookie(COOKIE_NAME, token, {
     httpOnly: true,
-    secure: process.env['NODE_ENV'] === 'production',
-    sameSite: 'lax',
+    secure: isProd,
+    sameSite: isProd ? 'none' : 'lax',
     maxAge: JWT_TTL_SECONDS * 1000,
     path: '/',
   });
 }
 
 export function clearPortalCookie(res: Response): void {
-  res.clearCookie(COOKIE_NAME, { httpOnly: true, secure: process.env['NODE_ENV'] === 'production', path: '/' });
+  const isProd = process.env['NODE_ENV'] === 'production';
+  res.clearCookie(COOKIE_NAME, { httpOnly: true, secure: isProd, sameSite: isProd ? 'none' : 'lax', path: '/' });
 }
 
 export function getPortalCookieName(): string {
