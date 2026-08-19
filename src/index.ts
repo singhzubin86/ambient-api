@@ -2,6 +2,7 @@
  * Ambient API — Entry Point
  */
 import express from 'express';
+import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
@@ -28,6 +29,25 @@ export async function createApp(): Promise<express.Application> {
 
   // ── Security headers ────────────────────────────────────────────────────────
   app.use(helmet());
+
+  // ── CORS — must come before routes ──────────────────────────────────────────
+  // Required for browser-facing portal: `credentials: true` allows the HttpOnly
+  // cookie to be sent cross-origin. Allowed origins controlled via config.cors.allowedOrigins
+  // (set via ALLOWED_ORIGINS env var; defaults to https://ambient-portal.fly.dev).
+  const corsOptions: cors.CorsOptions = {
+    origin: (origin, callback) => {
+      // Allow non-browser callers (curl, server-to-server) and SDK ad requests
+      if (!origin) return callback(null, true);
+      if (config.cors.allowedOrigins.includes(origin)) return callback(null, true);
+      callback(new Error(`CORS: origin ${origin} not allowed`));
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Publisher-Key'],
+  };
+  app.use(cors(corsOptions));
+  // Respond to preflight OPTIONS immediately before other middleware runs
+  app.options('*', cors(corsOptions));
 
   // ── Body parsing ────────────────────────────────────────────────────────────
   app.use(express.json({ limit: '64kb' }));
