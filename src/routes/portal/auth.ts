@@ -161,6 +161,10 @@ portalAuthRouter.post('/login', loginLimiter, async (req: Request, res: Response
     full_name: user.full_name,
     company_name: user.company_name,
     role: user.role,
+    // token included so the portal (on a different domain) can set its own
+    // HttpOnly cookie via a server-side route handler, working around the
+    // cross-origin SameSite restriction.
+    token,
   });
 });
 
