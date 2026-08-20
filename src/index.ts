@@ -33,19 +33,21 @@ export async function createApp(): Promise<express.Application> {
   // ── CORS — must come before routes ──────────────────────────────────────────
   // Two tiers:
   //
-  // 1. Ad hot path (/v1/ads/request, /v1/ads/click OPTIONS) — open to any origin.
-  //    The SDK runs in the publisher's browser from arbitrary origins. These routes
-  //    are authenticated via X-Publisher-Key (API key in header), NOT cookies.
-  //    credentials:false + origin:* is correct and required here.
+  // 1. Ad hot path (/v1/ads/request) — open to any origin, no credentials.
+  //    The SDK runs in the publisher's browser from arbitrary origins.
+  //    Authenticated via X-Publisher-Key header, NOT cookies.
   //
   // 2. All other routes — origin-allowlisted for portal UI only.
-  //    credentials:true allows the HttpOnly portal session cookie to be sent
-  //    cross-origin. Allowed origins controlled via config.cors.allowedOrigins
-  //    (set via ALLOWED_ORIGINS env var; defaults to https://ambient-portal.fly.dev).
+  //    credentials:true allows the HttpOnly portal session cookie to be sent.
+  //    origin:'*' and credentials:true are mutually exclusive per CORS spec.
   //
-  // NOTE: credentials:true and origin:'*' are mutually exclusive per CORS spec —
-  // that is why the ad hot path gets its own handler applied first.
+  // Implementation: the general cors handler uses a custom origin function that
+  // inspects req.path (injected via a closure over `req`) — but since the cors
+  // npm package's origin callback doesn't receive req, we use a per-request
+  // middleware that sets CORS headers manually for the ad path and delegates
+  // to the general cors handler for everything else.
 
+  // Ad path: fully open, no credentials. Handles its own OPTIONS preflight.
   const adCorsOptions: cors.CorsOptions = {
     origin: '*',
     credentials: false,
@@ -55,9 +57,12 @@ export async function createApp(): Promise<express.Application> {
   app.use('/v1/ads/request', cors(adCorsOptions));
   app.options('/v1/ads/request', cors(adCorsOptions));
 
+  // General handler for all other routes — allowlisted origins only.
+  // We exclude /v1/ads/request paths to prevent the general handler from
+  // overwriting the headers already set by adCorsOptions above.
   const corsOptions: cors.CorsOptions = {
     origin: (origin, callback) => {
-      // Allow non-browser callers (curl, server-to-server) and SDK ad requests
+      // Allow non-browser callers (curl, server-to-server)
       if (!origin) return callback(null, true);
       if (config.cors.allowedOrigins.includes(origin)) return callback(null, true);
       callback(new Error(`CORS: origin ${origin} not allowed`));
@@ -66,9 +71,13 @@ export async function createApp(): Promise<express.Application> {
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Publisher-Key'],
   };
-  app.use(cors(corsOptions));
-  // Respond to preflight OPTIONS immediately before other middleware runs
-  app.options('*', cors(corsOptions));
+  // Skip general CORS for /v1/ads/request — it already has its own handler.
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/v1/ads/request')) return next();
+    cors(corsOptions)(req, res, next);
+  });
+  // Preflight for non-ad routes
+  app.options(/^(?!\/v1\/ads\/request).*$/, cors(corsOptions));
 
   // ── Body parsing ────────────────────────────────────────────────────────────
   app.use(express.json({ limit: '64kb' }));
