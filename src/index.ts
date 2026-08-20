@@ -31,9 +31,30 @@ export async function createApp(): Promise<express.Application> {
   app.use(helmet());
 
   // ── CORS — must come before routes ──────────────────────────────────────────
-  // Required for browser-facing portal: `credentials: true` allows the HttpOnly
-  // cookie to be sent cross-origin. Allowed origins controlled via config.cors.allowedOrigins
-  // (set via ALLOWED_ORIGINS env var; defaults to https://ambient-portal.fly.dev).
+  // Two tiers:
+  //
+  // 1. Ad hot path (/v1/ads/request, /v1/ads/click OPTIONS) — open to any origin.
+  //    The SDK runs in the publisher's browser from arbitrary origins. These routes
+  //    are authenticated via X-Publisher-Key (API key in header), NOT cookies.
+  //    credentials:false + origin:* is correct and required here.
+  //
+  // 2. All other routes — origin-allowlisted for portal UI only.
+  //    credentials:true allows the HttpOnly portal session cookie to be sent
+  //    cross-origin. Allowed origins controlled via config.cors.allowedOrigins
+  //    (set via ALLOWED_ORIGINS env var; defaults to https://ambient-portal.fly.dev).
+  //
+  // NOTE: credentials:true and origin:'*' are mutually exclusive per CORS spec —
+  // that is why the ad hot path gets its own handler applied first.
+
+  const adCorsOptions: cors.CorsOptions = {
+    origin: '*',
+    credentials: false,
+    methods: ['POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Publisher-Key'],
+  };
+  app.use('/v1/ads/request', cors(adCorsOptions));
+  app.options('/v1/ads/request', cors(adCorsOptions));
+
   const corsOptions: cors.CorsOptions = {
     origin: (origin, callback) => {
       // Allow non-browser callers (curl, server-to-server) and SDK ad requests
